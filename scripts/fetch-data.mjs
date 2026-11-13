@@ -1,5 +1,5 @@
-// Downloads the Consumer Council feed, normalises it, and keeps a small price history.
-// ADJUST the field names in normalise() once you have looked at the real JSON.
+// Downloads the Consumer Council feed, normalises it, and keeps a per-store price history.
+// ADJUST the field names in normalise() if the feed changes.
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const URL_ = 'https://online-price-watch.consumer.org.hk/opw/opendata/pricewatch.json';
@@ -51,15 +51,30 @@ try {
 }
 
 mkdirSync('public/data', { recursive: true });
+const day = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); // today's date in Hong Kong
 const stores = [...new Set(products.flatMap((p) => p.prices.map((x) => x.store)))].sort();
-writeFileSync(OUT, JSON.stringify({ updated: new Date().toISOString(), stores, products }));
+writeFileSync(OUT, JSON.stringify({ updated: new Date().toISOString(), day, stores, products }));
 
-// History: store a point only when a product's lowest price changes (keeps the file small).
+// Daily history: for each product and store, save a point only when the price changes.
+// Prices not changing = no new data, so the file stays small. The chart fills in the days between.
 const hist = existsSync(HIST) ? JSON.parse(readFileSync(HIST, 'utf8')) : {};
-const day = new Date().toISOString().slice(0, 10);
 for (const p of products) {
-  const h = (hist[p.code] ??= []);
-  if (!h.length || h[h.length - 1][1] !== p.min) { h.push([day, p.min]); if (h.length > 30) h.shift(); }
+  let h = hist[p.code];
+  if (!h || Array.isArray(h)) h = hist[p.code] = {}; // older format is replaced
+  const now = new Set(p.prices.map((x) => x.store));
+  for (const x of p.prices) {
+    const s = (h[x.store] ??= []);
+    const last = s[s.length - 1];
+    if (!last || last[1] !== x.price) {
+      if (last && last[0] === day) last[1] = x.price; else s.push([day, x.price]);
+      if (s.length > 400) s.shift();
+    }
+  }
+  for (const store of Object.keys(h)) { // product no longer sold at this store
+    if (now.has(store)) continue;
+    const s = h[store], last = s[s.length - 1];
+    if (last && last[1] !== null) s.push([day, null]);
+  }
 }
 writeFileSync(HIST, JSON.stringify(hist));
-console.log(`Saved ${products.length} products, ${stores.length} stores`);
+console.log(`Saved ${products.length} products, ${stores.length} stores, history for ${Object.keys(hist).length} products (${day})`);
